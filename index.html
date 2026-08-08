@@ -10,14 +10,7 @@
 <meta property="og:title" content="⚽ Simulador do Craque — Vida de Jogador em 3D">
 <meta property="og:description" content="Da várzea à Copa do Mundo: treine, trabalhe, tome decisões e construa a carreira do seu craque neste simulador de vida em 3D.">
 <meta property="og:type" content="website">
-<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png">
-<link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png">
-<link rel="manifest" href="manifest.json">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Craque">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='%230f4d26' stroke='%23e0b23a' stroke-width='6'/%3E%3Ctext x='50' y='68' font-size='58' text-anchor='middle'%3E%E2%9A%BD%3C/text%3E%3C/svg%3E">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Anton&family=Rajdhani:wght@500;600;700&display=swap');
@@ -141,6 +134,18 @@
   }
   .btn-avanco:hover{ background:rgba(224,178,58,0.32); }
 
+  #som-btn{
+    position:absolute; top:14px; left:230px; width:36px; height:36px;
+    background:rgba(15,25,18,0.8); border:1px solid #2c4229; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; font-size:1.05em;
+    cursor:pointer; pointer-events:auto; z-index:12;
+  }
+  #musica-btn{
+    position:absolute; top:14px; left:274px; width:36px; height:36px;
+    background:rgba(15,25,18,0.8); border:1px solid #2c4229; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; font-size:1.05em;
+    cursor:pointer; pointer-events:auto; z-index:12;
+  }
   #celular-btn{
     position:absolute; top:78px; right:14px; width:44px; height:44px;
     background:rgba(15,25,18,0.85); border:1px solid #2c4229; border-radius:50%;
@@ -485,6 +490,9 @@
     </div>
   </div>
 
+  <div id="som-btn" onclick="alternarSom()" title="Ligar/desligar som">🔊</div>
+  <div id="musica-btn" onclick="alternarMusica()" title="Ligar/desligar música">🎵</div>
+
   <div id="celular-btn" onclick="abrirCelular()" style="display:none;">
     📱<span id="celular-badge"></span>
   </div>
@@ -750,6 +758,349 @@
 </div>
 
 <script>
+// ======================= ÁUDIO: EFEITOS SONOROS PROCEDURAIS =======================
+// Todos os sons são sintetizados na hora com Web Audio API — nada de arquivos
+// externos, então o jogo continua sendo um HTML único que roda offline.
+const Som = {
+  ctx: null, master: null, ativo: true, _torcida: null,
+
+  iniciar(){
+    try {
+      if(this.ctx){ if(this.ctx.state === "suspended") this.ctx.resume(); return; }
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = 0.5;
+      this.master.connect(this.ctx.destination);
+    } catch(e){ this.ctx = null; }
+  },
+  ok(){ return this.ativo && this.ctx && this.master; },
+  _t(atraso){ return this.ctx.currentTime + (atraso || 0); },
+  _env(g, t0, ataque, dur, pico){
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0001, pico), t0 + ataque);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + ataque + dur);
+  },
+
+  // ---- blocos básicos ----
+  tom(freq, dur, o){
+    if(!this.ok()) return;
+    o = o || {};
+    const t0 = this._t(o.atraso);
+    const osc = this.ctx.createOscillator(), g = this.ctx.createGain();
+    osc.type = o.tipo || "sine";
+    osc.frequency.setValueAtTime(freq, t0);
+    if(o.para) osc.frequency.exponentialRampToValueAtTime(Math.max(1, o.para), t0 + dur);
+    this._env(g, t0, o.ataque || 0.005, dur, o.vol !== undefined ? o.vol : 0.3);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t0); osc.stop(t0 + dur + 0.06);
+  },
+  ruido(dur, o){
+    if(!this.ok()) return;
+    o = o || {};
+    const t0 = this._t(o.atraso);
+    const n = Math.max(1, Math.floor(this.ctx.sampleRate * dur));
+    const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for(let i=0;i<n;i++) d[i] = Math.random()*2 - 1;
+    const src = this.ctx.createBufferSource(); src.buffer = buf;
+    const f = this.ctx.createBiquadFilter();
+    f.type = o.filtro || "bandpass";
+    f.frequency.setValueAtTime(o.freq || 1000, t0);
+    if(o.freqPara) f.frequency.exponentialRampToValueAtTime(Math.max(20, o.freqPara), t0 + dur);
+    f.Q.value = o.q || 1;
+    const g = this.ctx.createGain();
+    this._env(g, t0, o.ataque || 0.01, dur, o.vol !== undefined ? o.vol : 0.25);
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start(t0); src.stop(t0 + dur + 0.06);
+  },
+
+  // ---- efeitos do jogo ----
+  clique(){ this.tom(880, 0.05, { tipo:"square", vol:0.06, para:660 }); },
+  erro(){ this.tom(220, 0.22, { tipo:"sawtooth", vol:0.14, para:110 }); },
+
+  dinheiro(){   // caixa registradora: sino duplo + tilintar de moedas
+    this.tom(1318, 0.16, { tipo:"triangle", vol:0.22 });
+    this.tom(1760, 0.22, { tipo:"triangle", vol:0.18, atraso:0.07 });
+    this.tom(2637, 0.3,  { tipo:"sine", vol:0.10, atraso:0.12 });
+    this.ruido(0.18, { filtro:"highpass", freq:3000, vol:0.07, atraso:0.05 });
+  },
+  comida(){     // mastigada: batidas graves e abafadas
+    for(let i=0;i<3;i++){
+      this.ruido(0.11, { filtro:"lowpass", freq:520, freqPara:200, vol:0.16, atraso:i*0.17 });
+      this.tom(150, 0.1, { tipo:"sine", vol:0.10, para:95, atraso:i*0.17 });
+    }
+  },
+  banheiro(){   // descarga: jato caindo e girando no ralo
+    this.ruido(1.1, { filtro:"lowpass", freq:2200, freqPara:420, vol:0.20 });
+    this.ruido(0.9, { filtro:"bandpass", freq:900, freqPara:260, q:2.5, vol:0.13, atraso:0.2 });
+    this.tom(320, 0.7, { tipo:"sine", vol:0.05, para:140, atraso:0.35 });
+  },
+  trabalho(){   // marteladas e ferramenta
+    for(let i=0;i<3;i++){
+      this.ruido(0.09, { filtro:"bandpass", freq:1800, q:1.4, vol:0.18, atraso:i*0.22 });
+      this.tom(180, 0.09, { tipo:"square", vol:0.10, para:80, atraso:i*0.22 });
+    }
+  },
+  chute(){      // pé na bola
+    this.tom(190, 0.13, { tipo:"sine", vol:0.30, para:65 });
+    this.ruido(0.09, { filtro:"bandpass", freq:1400, q:0.9, vol:0.18 });
+  },
+  cone(){ this.tom(420, 0.09, { tipo:"square", vol:0.14, para:230 }); },
+  flexao(){ this.tom(120, 0.16, { tipo:"sine", vol:0.16, para:85 }); },
+  apito(){      // apito do árbitro
+    this.tom(2100, 0.32, { tipo:"square", vol:0.13 });
+    this.tom(2650, 0.3,  { tipo:"square", vol:0.09, atraso:0.02 });
+  },
+  gol(){        // grito da torcida + apito + fanfarra
+    this.ruido(1.6, { filtro:"bandpass", freq:500, freqPara:1400, q:0.7, vol:0.30, ataque:0.25 });
+    this.apito();
+    [523, 659, 784, 1046].forEach((f,i)=>{
+      this.tom(f, 0.35, { tipo:"triangle", vol:0.16, atraso:0.18 + i*0.09 });
+    });
+  },
+  conquista(){  // arpejo de vitória
+    [659, 831, 988, 1318].forEach((f,i)=>{
+      this.tom(f, 0.3, { tipo:"triangle", vol:0.15, atraso:i*0.08 });
+    });
+  },
+  notificacao(){ this.tom(1046, 0.14, { tipo:"sine", vol:0.16 }); this.tom(1568, 0.2, { tipo:"sine", vol:0.13, atraso:0.1 }); },
+  porta(){      // dobradiça + fecho
+    this.ruido(0.35, { filtro:"bandpass", freq:700, freqPara:300, q:3, vol:0.10 });
+    this.tom(240, 0.07, { tipo:"square", vol:0.10, para:120, atraso:0.34 });
+  },
+  lesao(){      // acorde grave e dissonante
+    this.tom(160, 0.7, { tipo:"sawtooth", vol:0.16, para:70 });
+    this.tom(169, 0.7, { tipo:"sawtooth", vol:0.12, para:74 });
+  },
+  sirene(){     // viatura policial
+    for(let i=0;i<4;i++){
+      this.tom(760, 0.28, { tipo:"square", vol:0.13, para:1080, atraso:i*0.32 });
+    }
+  },
+  dormir(){     // suspiro descendente
+    this.tom(420, 0.9, { tipo:"sine", vol:0.10, para:180, ataque:0.15 });
+  },
+  passo(){ this.ruido(0.06, { filtro:"lowpass", freq:900, vol:0.05 }); },
+
+  // ---- torcida contínua durante a partida ----
+  iniciarTorcida(){
+    if(!this.ok() || this._torcida) return;
+    const dur = 2.2;
+    const n = Math.floor(this.ctx.sampleRate * dur);
+    const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for(let i=0;i<n;i++) d[i] = (Math.random()*2 - 1) * 0.6;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf; src.loop = true;
+    const f = this.ctx.createBiquadFilter();
+    f.type = "bandpass"; f.frequency.value = 620; f.Q.value = 0.55;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, this._t());
+    g.gain.exponentialRampToValueAtTime(0.085, this._t() + 1.2);
+    // LFO dá a "respiração" natural do estádio
+    const lfo = this.ctx.createOscillator(), lfoG = this.ctx.createGain();
+    lfo.frequency.value = 0.16; lfoG.gain.value = 0.035;
+    lfo.connect(lfoG); lfoG.connect(g.gain);
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start(); lfo.start();
+    this._torcida = { src, g, lfo };
+  },
+  pararTorcida(){
+    if(!this._torcida) return;
+    const { src, g, lfo } = this._torcida;
+    this._torcida = null;
+    try {
+      g.gain.cancelScheduledValues(this._t());
+      g.gain.setValueAtTime(Math.max(0.0001, g.gain.value), this._t());
+      g.gain.exponentialRampToValueAtTime(0.0001, this._t() + 0.6);
+      src.stop(this._t() + 0.7); lfo.stop(this._t() + 0.7);
+    } catch(e){}
+  }
+};
+
+// ======================= MÚSICA DE FUNDO PROCEDURAL =======================
+// A trilha é gerada em tempo real (mesma AudioContext dos efeitos), com temas que
+// trocam sozinhos conforme o momento: cidade de dia, noite, treino e dia de jogo.
+const Musica = {
+  ativa: true,
+  tema: null,
+  bus: null,
+  _timer: null,
+  _passo: 0,
+  _proximoTempo: 0,
+  _volumeAlvo: 0.40,
+
+  BPM:   { cidade: 86, noite: 64, treino: 104, partida: 126 },
+  // Progressões em semitons a partir de um tônico, com o tipo de acorde.
+  TEMAS: {
+    cidade:  { raiz: 57, prog: [[0,"m7"], [5,"maj7"], [-2,"m7"], [3,"maj7"]], percussao:false, brilho:0.55 },
+    noite:   { raiz: 50, prog: [[0,"m9"], [-4,"maj7"], [-2,"m7"], [3,"maj7"]], percussao:false, brilho:0.35 },
+    treino:  { raiz: 55, prog: [[0,"maj7"], [2,"m7"], [7,"maj7"], [5,"maj7"]], percussao:true,  brilho:0.7 },
+    partida: { raiz: 45, prog: [[0,"m"], [7,"m"], [5,"maj"], [3,"maj"]],       percussao:true,  brilho:0.85 }
+  },
+  ACORDES: {
+    m:    [0,3,7],      maj:  [0,4,7],
+    m7:   [0,3,7,10],   maj7: [0,4,7,11],
+    m9:   [0,3,7,10,14]
+  },
+
+  freq(midi){ return 440 * Math.pow(2, (midi - 69) / 12); },
+
+  _garantirBus(){
+    if(!Som.ctx) Som.iniciar();
+    if(!Som.ctx || !Som.master) return false;
+    if(!this.bus){
+      this.bus = Som.ctx.createGain();
+      this.bus.gain.value = 0.0001;
+      this.bus.connect(Som.master);
+    }
+    return true;
+  },
+
+  // ---- vozes ----
+  _nota(freq, dur, t0, tipo, vol, ataque){
+    const osc = Som.ctx.createOscillator(), g = Som.ctx.createGain();
+    osc.type = tipo;
+    osc.frequency.setValueAtTime(freq, t0);
+    const a = ataque || 0.02;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0001, vol), t0 + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + dur);
+    osc.connect(g); g.connect(this.bus);
+    osc.start(t0); osc.stop(t0 + a + dur + 0.05);
+  },
+  _percussao(t0, forte){
+    if(forte){ // bumbo
+      const osc = Som.ctx.createOscillator(), g = Som.ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(120, t0);
+      osc.frequency.exponentialRampToValueAtTime(45, t0 + 0.11);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.34, t0 + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.16);
+      osc.connect(g); g.connect(this.bus);
+      osc.start(t0); osc.stop(t0 + 0.2);
+    } else {   // chimbal
+      const n = Math.floor(Som.ctx.sampleRate * 0.05);
+      const buf = Som.ctx.createBuffer(1, n, Som.ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for(let i=0;i<n;i++) d[i] = (Math.random()*2-1) * (1 - i/n);
+      const src = Som.ctx.createBufferSource(); src.buffer = buf;
+      const f = Som.ctx.createBiquadFilter();
+      f.type = "highpass"; f.frequency.value = 7000;
+      const g = Som.ctx.createGain();
+      g.gain.setValueAtTime(0.09, t0);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.05);
+      src.connect(f); f.connect(g); g.connect(this.bus);
+      src.start(t0); src.stop(t0 + 0.08);
+    }
+  },
+
+  // ---- sequenciador: 8 colcheias por compasso, 4 compassos por volta ----
+  _tocarPasso(passo, t0){
+    const cfg = this.TEMAS[this.tema];
+    if(!cfg) return;
+    const compasso = Math.floor(passo / 8) % cfg.prog.length;
+    const naBarra = passo % 8;
+    const [offset, tipoAcorde] = cfg.prog[compasso];
+    const raiz = cfg.raiz + offset;
+    const intervalos = this.ACORDES[tipoAcorde] || this.ACORDES.maj;
+
+    // baixo: tônica no tempo 1 e a quinta no tempo 3
+    if(naBarra === 0) this._nota(this.freq(raiz - 12), 0.55, t0, "triangle", 0.22, 0.01);
+    if(naBarra === 4) this._nota(this.freq(raiz - 12 + intervalos[2]), 0.4, t0, "triangle", 0.16, 0.01);
+
+    // pad: acorde sustentado a cada troca de compasso
+    if(naBarra === 0){
+      intervalos.forEach((iv, k)=>{
+        this._nota(this.freq(raiz + iv), 1.5, t0, "sine", 0.075 - k*0.008, 0.35);
+      });
+    }
+
+    // arpejo: notas do acorde nas colcheias ímpares
+    if(naBarra % 2 === 1){
+      const iv = intervalos[(passo * 3) % intervalos.length];
+      const oitava = ((passo * 5) % 7 < 3) ? 12 : 24;
+      this._nota(this.freq(raiz + iv + oitava), 0.28, t0, "triangle", 0.075 * cfg.brilho, 0.008);
+    }
+
+    // percussão nos temas mais animados
+    if(cfg.percussao){
+      if(naBarra === 0 || naBarra === 4) this._percussao(t0, true);
+      if(naBarra % 2 === 1) this._percussao(t0, false);
+    }
+  },
+
+  _agendar(){
+    if(!this.tema || !Som.ctx || !this.ativa || !Som.ativo) return;
+    const passoDur = 60 / this.BPM[this.tema] / 2;   // colcheia
+    const limite = Som.ctx.currentTime + 0.3;        // janela de antecipação
+    while(this._proximoTempo < limite){
+      if(this._proximoTempo < Som.ctx.currentTime) this._proximoTempo = Som.ctx.currentTime + 0.05;
+      try { this._tocarPasso(this._passo, this._proximoTempo); } catch(e){}
+      this._proximoTempo += passoDur;
+      this._passo++;
+    }
+  },
+
+  tocar(tema){
+    if(!this.ativa || !Som.ativo) return;
+    if(this.tema === tema) return;            // já está tocando esse tema
+    if(!this._garantirBus()) return;
+    const trocando = this.tema !== null;
+    this.tema = tema;
+    if(!trocando){ this._passo = 0; this._proximoTempo = Som.ctx.currentTime + 0.1; }
+    // sobe o volume suavemente (evita corte seco na troca de tema)
+    const t = Som.ctx.currentTime;
+    this.bus.gain.cancelScheduledValues(t);
+    this.bus.gain.setValueAtTime(Math.max(0.0001, this.bus.gain.value), t);
+    this.bus.gain.exponentialRampToValueAtTime(this._volumeAlvo, t + 1.2);
+    if(!this._timer) this._timer = setInterval(()=> this._agendar(), 60);
+  },
+
+  parar(){
+    if(this._timer){ clearInterval(this._timer); this._timer = null; }
+    this.tema = null;
+    if(this.bus && Som.ctx){
+      const t = Som.ctx.currentTime;
+      this.bus.gain.cancelScheduledValues(t);
+      this.bus.gain.setValueAtTime(Math.max(0.0001, this.bus.gain.value), t);
+      this.bus.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
+    }
+  },
+
+  // Tema padrão do mundo aberto, conforme a hora do dia.
+  temaAmbiente(){
+    const h = (typeof estado !== "undefined" && estado.hora !== undefined) ? estado.hora : 12;
+    return (h < 6 || h > 19.5) ? "noite" : "cidade";
+  },
+  voltarAoAmbiente(){ this.tocar(this.temaAmbiente()); }
+};
+
+function alternarMusica(){
+  Musica.ativa = !Musica.ativa;
+  const btn = document.getElementById("musica-btn");
+  if(btn){ btn.textContent = Musica.ativa ? "🎵" : "🎵̸"; btn.style.opacity = Musica.ativa ? "1" : "0.45"; }
+  if(Musica.ativa) Musica.voltarAoAmbiente();
+  else Musica.parar();
+  Som.clique();
+}
+
+function alternarSom(){
+  Som.ativo = !Som.ativo;
+  if(!Som.ativo){ Som.pararTorcida(); Musica.parar(); }
+  else { Som.iniciar(); if(Musica.ativa) Musica.voltarAoAmbiente(); }
+  const btn = document.getElementById("som-btn");
+  if(btn) btn.textContent = Som.ativo ? "🔊" : "🔇";
+  if(Som.ativo) Som.clique();
+}
+// Som de clique em qualquer botão do jogo
+document.addEventListener("click", e=>{
+  if(e.target && e.target.tagName === "BUTTON" && e.target.id !== "som-btn") Som.clique();
+}, true);
+
 // ======================= DADOS DO JOGO =======================
 const POOL_TIMES = [
   "Athletico Panarense","Atletiquo Mina","Pormeiras","Framingo",
@@ -885,6 +1236,7 @@ function sortearLesao(){
   const t = TIPOS_LESAO[Math.floor(Math.random()*TIPOS_LESAO.length)];
   const dias = t.min + Math.floor(Math.random()*(t.max - t.min + 1));
   estado.lesao = { tipo:t.nome, dias, diasTotais:dias };
+  Som.lesao();
   estado.confianca = clamp(estado.confianca - 5);
   log(`🚑 LESÃO: ${t.nome}. Você fica de fora por ${dias} dia(s).`, "alerta");
   adicionarNotificacao("🚑 Departamento médico", `Diagnóstico: ${t.nome}. Afastamento estimado: ${dias} dias. Descanse e evite treinar.`);
@@ -930,6 +1282,7 @@ function pagarSalarioSeDevido(){
   estado.diaUltimoSalario = estado.dia;
   estado.salarioMensal = calcularSalario();
   estado.dinheiro = clampDinheiro(estado.dinheiro + estado.salarioMensal);
+  Som.dinheiro();
   log(`💰 Salário do mês recebido: R$${estado.salarioMensal.toLocaleString("pt-BR")}.`, "bom");
   adicionarNotificacao("💰 Salário", `Caiu na conta: R$${estado.salarioMensal.toLocaleString("pt-BR")} referente ao mês.`);
 }
@@ -1128,6 +1481,7 @@ function avancarAteEventoImportante(){
 
 // ======================= NAVEGACAO DE TELAS =======================
 function selecionarPlataforma(p){
+  Som.iniciar();
   plataforma = p;
   document.getElementById("tela-plataforma").style.display = "none";
   document.getElementById("tela-modalidade").style.display = "flex";
@@ -2614,6 +2968,7 @@ function construirLojaInterior(){
 }
 
 function entrarNaLoja(nomeTime){
+  Som.porta();
   lojaAtual = nomeTime;
   posicaoAntesDaLoja = camera.position.clone();
   yawAntesDaLoja = yaw; pitchAntesDaLoja = pitch;
@@ -2674,6 +3029,7 @@ function pagarNoCaixa(){
   }
   estado.dinheiro = clampDinheiro(estado.dinheiro - PRECO_CAMISA);
   estado.camisasCompradas.push(lojaAtual);
+  Som.dinheiro();
   estado.fas = clampFas(estado.fas + 2);
   estado.itemCarregado = null;
   log(`👕 Você pagou e levou a camisa do ${lojaAtual}! (+2 fãs)`, "bom");
@@ -2685,6 +3041,7 @@ function roubarNoCaixa(){
   cometerFurto();
 }
 function sairDaLoja(){
+  Som.porta();
   if(estado.itemCarregado) cometerFurto();
   if(posicaoAntesDaLoja){
     camera.position.copy(posicaoAntesDaLoja);
@@ -2702,6 +3059,7 @@ function cometerFurto(){
   estado.itemCarregado = null;
   estado.integridade = Math.max(0, estado.integridade - 20);
   estado.procurado = true;
+  Som.sirene();
   estado.nivelProcurado = (estado.nivelProcurado || 0) + 1;
   log(`🚨 Você saiu correndo com a camisa do ${time} sem pagar! Uma câmera de segurança te flagrou.`, "alerta");
   adicionarNotificacao("🚨 Alerta de segurança", `As câmeras da loja do ${time} registraram um furto. Agora você é um jogador procurado — cuidado por onde anda.`);
@@ -2713,6 +3071,7 @@ function rolarAbordagemPolicial(){
   if(Math.random() < chance) estado.policialPendente = true;
 }
 function processarAbordagemPolicial(){
+  Som.sirene();
   jogoAtivo = false;
   minigameAtivo = "policia";
   const texto = estado.nivelProcurado >= 3
@@ -2867,6 +3226,7 @@ function comprarCelular(){
     ()=>{
       estado.dinheiro = clampDinheiro(estado.dinheiro - preco);
       estado.temCelular = true;
+      Som.dinheiro();
       document.getElementById("celular-btn").style.display = "flex";
       log("📱 Você comprou um celular! Agora vai receber notificações de trabalho e e-mails do técnico.", "bom");
       adicionarNotificacao("Bem-vindo!", "Seu celular está pronto. Você vai receber avisos de trabalhos disponíveis na cidade e e-mails do técnico por aqui.");
@@ -2876,6 +3236,7 @@ function comprarCelular(){
 }
 function adicionarNotificacao(titulo, corpo){
   if(!estado.temCelular) return;
+  Som.notificacao();
   estado.notificacoes.unshift({ titulo, corpo, lida:false });
   if(estado.notificacoes.length > TETO_NOTIFICACOES) estado.notificacoes.length = TETO_NOTIFICACOES;
   atualizarBadgeCelular();
@@ -3005,6 +3366,7 @@ function acaoTrabalhar(job){
   estado.fome = clamp(estado.fome + 14);
   estado.banheiro = clamp(estado.banheiro + 8);
   estado.trabalhouHoje = true;
+  Som.trabalho(); Som.dinheiro();
   registrarAcaoBloco("trabalho");
   if(efeito.msg) log(efeito.msg, (efeito.pagamentoMult || 1) >= 1 ? "bom" : "alerta");
   log(`💼 Você trabalhou em "${job.nome}" e ganhou R$${pagamento}!`, "bom");
@@ -3030,6 +3392,7 @@ function marcoUnicoAlcancado(id){
 }
 function registrarMarco(id, titulo, texto, icone){
   if(marcoUnicoAlcancado(id)) return;
+  Som.conquista();
   estado.marcosAlcancados.push(id);
   mostrarConquista(titulo, texto, icone);
   log(`🏆 Conquista: ${titulo} — ${texto}`, "bom");
@@ -3043,6 +3406,7 @@ function checarMarcosAtributo(atributo, valor){
   });
 }
 function celebrarGol(){
+  Som.gol();
   const flash = document.getElementById("flash-gol");
   const texto = document.getElementById("flash-gol-texto");
   texto.style.animation = "none";
@@ -3131,6 +3495,7 @@ function cliques_finalizar(){
   estado.dinheiro = clampDinheiro(estado.dinheiro + ganho);
   estado.energia = clamp(estado.energia - 10);
   estado.trabalhouHoje = true;
+  Som.dinheiro();
   document.getElementById("cliques-botao").style.display = "none";
   document.getElementById("cliques-resultado").innerHTML =
     `Você clicou <b>${cliqueState.cliques}</b> vezes em 10 segundos!<br>💵 Ganhou R$${formatarDinheiro(ganho)}`;
@@ -3488,6 +3853,7 @@ function acaoDormir(silencioso){
   return resultado;
 }
 function aplicarNovoDia(silencioso){
+  if(!silencioso) Som.dormir();
   if(!silencioso && estado.banheiro >= 90) log("⚠️ Melhor ir ao banheiro antes de dormir!", "alerta");
   if(!estado.treinouHoje){
     estado.streakTreino = 0;
@@ -3590,12 +3956,14 @@ function atualizarMiniAnimacao(now){
 }
 
 function acaoBanheiro(){
+  Som.banheiro();
   iniciarAnimacaoAcao("banheiro", 1300, ()=>{
     estado.banheiro = 0;
     log("🚽 Alívio total.", "bom");
   });
 }
 function acaoComer(){
+  Som.comida();
   iniciarAnimacaoAcao("comer", 1600, ()=>{
     estado.fome = clamp(estado.fome - 45);
     estado.energia = clamp(estado.energia + 5);
@@ -3816,6 +4184,7 @@ function entrarTreino3D(tipo, posX, posY, posZ, yawInicial){
   document.getElementById("treino3d-hud").style.display = "flex";
   document.getElementById("treino3d-sair").style.display = "flex";
   atualizarTreino3DMensagem("");
+  if(!String(tipo).startsWith("jogo-")) Musica.tocar("treino");
   if(plataforma === "pc" && renderer.domElement.requestPointerLock){
     renderer.domElement.requestPointerLock();
   }
@@ -3847,6 +4216,7 @@ function sairTreino3D(manual){
   }
   minigameAtivo = null;
   jogoAtivo = true;
+  if(!momento3D) Musica.voltarAoAmbiente();
   if(manual === true) log("🚶 Você saiu do treino antes de terminar.", "evento");
 }
 // Nome do botão de ação conforme a plataforma, pra instrução aparecer certa em cada aparelho.
@@ -3957,6 +4327,7 @@ function atualizarChute3D(dt){
 function chutar3D(){
   if(treino3DAtivo !== "chute" || chute3DAnimando || chuteState.restantes <= 0 || !golArea3D) return;
   chute3DAnimando = true;
+  Som.chute();
   chuteState.restantes--;
 
   // a mira é o próprio olhar: raio da câmera até o plano do gol
@@ -4014,6 +4385,7 @@ function chutar3D(){
 function finalizarChute3D(errou, zona, distGoleiro){
   if(treino3DAtivo !== "chute") return;
   if(errou){
+    Som.erro();
     atualizarTreino3DMensagem(distGoleiro < 0.20 ? "🧤 O goleiro defendeu!" : "😬 A bola foi para fora!", "#ff8686");
   } else {
     chuteState.pontos += zona.pontos;
@@ -4108,6 +4480,7 @@ function atualizarDrible3D(dt){
       if(!tocou && Math.random() < chanceTropeco) tocou = true;
       if(tocou){
         drible3D.tocados++;
+        Som.cone();
         cone.mesh.material.color.copy(corLinear(0xff3333));
         atualizarTreino3DMensagem("💥 Encostou no cone!", "#ff8686");
       } else {
@@ -4184,10 +4557,12 @@ function forcaTentarRep3D(){
   const t = (Math.sin(forca3D.phase)+1)/2;
   const acertou = t >= 0.78;
   if(acertou){
+    Som.flexao();
     atualizarTreino3DMensagem("✅ Boa!", "#8ef0a0");
     forca3D.speed = Math.min(6, forca3D.speed*1.09);
   } else {
     forca3D.erros++;
+    Som.erro();
     atualizarTreino3DMensagem("😵 Quase caiu! Fora do tempo.", "#ff8686");
     forca3D.speed = Math.max(0.7, forca3D.speed*0.85);
     dispararTropeco3D();
@@ -4371,6 +4746,7 @@ function atualizarMomentoChute3D(dt){
 function chutarMomento3D(){
   if(treino3DAtivo !== "jogo-chute" || chuteMomento.animando || !golAreaMomento) return;
   chuteMomento.animando = true;
+  Som.chute();
 
   const dir = new THREE.Vector3(
     -Math.sin(yaw)*Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw)*Math.cos(pitch)
@@ -4412,6 +4788,7 @@ function chutarMomento3D(){
         celebrarGol();
         atualizarTreino3DMensagem("⚽ GOOOOL!", "#8ef0a0");
       } else if(defendido){
+        Som.erro();
         atualizarTreino3DMensagem("🧤 O goleiro defendeu!", "#ff8686");
       } else {
         atualizarTreino3DMensagem("😬 Pra fora!", "#ff8686");
@@ -4467,6 +4844,7 @@ function atualizarMomentoDrible3D(dt){
       const dist = Math.abs(dribleMomento.x - zag.grupo.position.x);
       if(dist < dribleMomento.raio){
         dribleMomento.ativo = false;
+        Som.erro();
         atualizarTreino3DMensagem("💥 O zagueiro tomou a bola!", "#ff8686");
         setTimeout(()=> sairMomento3D(false), 1100);
         return;
@@ -4673,6 +5051,8 @@ function rodarFeed(eventos, aoTerminar){
   proximo();
 }
 function abrirTelaPartida(titulo){
+  Som.iniciarTorcida();
+  Musica.tocar("partida");
   document.getElementById("partida-titulo").textContent = titulo;
   document.getElementById("partida-placar").textContent = "0 x 0";
   document.getElementById("partida-feed").innerHTML = "";
@@ -5047,6 +5427,7 @@ function finalizarPartidaComMelhoresMomentos(resultado, adversario, ehCopa, nome
     ? "✨ Você faz uma grande partida e é aplaudido pela torcida!"
     : "😕 Você tem dificuldades para entrar no ritmo do jogo.",
     resultado.desempenho > limiar ? "bom" : "alerta");
+  Som.apito();
   addLinha("⏱️ Apito final!");
   if(ehCopa) addLinha(`🏆 Fim de uma noite histórica na ${nomeEvento}!`, "bom");
 
@@ -5148,6 +5529,8 @@ function assistirNaTorcidaSim(){
   });
 }
 function assistirNaTorcidaNao(){
+  Som.pararTorcida();
+  Musica.voltarAoAmbiente();
   document.getElementById("tela-pergunta-assistir").style.display = "none";
   const adversario = nomeAdversario();
   const golsTime = Math.floor(Math.random()*4);
@@ -5156,6 +5539,8 @@ function assistirNaTorcidaNao(){
   jogoAtivo = true;
 }
 function fecharPartida(){
+  Som.pararTorcida();
+  Musica.voltarAoAmbiente();
   document.getElementById("tela-partida").style.display = "none";
   jogoAtivo = true;
 }
@@ -5808,6 +6193,12 @@ function atualizarTempo(dt){
     renderer.toneMappingExposure += (alvoExp - renderer.toneMappingExposure) * 0.02;
   }
 
+  // a trilha troca sozinha entre dia e noite (sem cortar o que está tocando)
+  if(Musica.ativa && Musica.tema && (Musica.tema === "cidade" || Musica.tema === "noite")){
+    const temaCerto = noite ? "noite" : "cidade";
+    if(Musica.tema !== temaCerto) Musica.tocar(temaCerto);
+  }
+
   // iluminação pública acende sozinha ao anoitecer
   if(window._luminarias){
     const alvoEmissivo = noite ? 1.6 : 0;
@@ -6032,6 +6423,8 @@ function animate(){
 
 // ======================= INICIALIZACAO =======================
 function iniciarJogo(){
+  Som.iniciar();
+  Musica.voltarAoAmbiente();
   sortearPotencial();
   iniciarTabela();
   estado.idade = IDADE_INICIAL;
@@ -6073,12 +6466,5 @@ animate();
   </div>
 </div>
 
-<script>
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('service-worker.js').catch(() => {});
-    });
-  }
-</script>
 </body>
 </html>
